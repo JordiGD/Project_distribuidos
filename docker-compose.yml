@@ -1,0 +1,88 @@
+services:
+
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik_proxy
+    restart: unless-stopped
+    command:
+      - --api.dashboard=true
+      - --api.insecure=true
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.watch=true
+      - --entrypoints.web.address=:80
+      - --log.level=INFO
+      - --accesslog=true
+    ports:
+      - "80:80"
+      - "8080:8080" 
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - project_network
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq_broker
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-password}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - project_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - project_network
+
+  backend:
+    build: ./backend
+    container_name: project_backend
+    restart: always
+    depends_on:
+      - traefik
+      - rabbitmq
+      - redis
+    env_file:
+      - .env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`localhost`) && PathPrefix(`/api`)"
+      - "traefik.http.services.backend.loadbalancer.server.port=5000"
+    networks:
+      - project_network
+
+  worker:
+    build: ./worker
+    container_name: food_analysis_worker
+    restart: always
+    depends_on:
+      - rabbitmq
+      - redis
+    env_file:
+      - .env
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - REDIS_HOST=redis
+    networks:
+      - project_network
+
+volumes:
+  rabbitmq_data:
+  redis_data:
+
+networks:
+  project_network:
+    driver: bridge
