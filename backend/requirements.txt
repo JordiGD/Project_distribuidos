@@ -1,6 +1,5 @@
-flask
+fastapi
+uvicorn[standard]
+python-multipart
 pika
 pillow
-redis
-requests
-uuid

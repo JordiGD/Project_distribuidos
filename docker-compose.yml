@@ -47,7 +47,7 @@ services:
       - .env
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`localhost`) && PathPrefix(`/api`)"
+      - "traefik.http.routers.backend.rule=Host(`identical.localhost`)"
       - "traefik.http.services.backend.loadbalancer.server.port=5000"
     networks:
       - project_network

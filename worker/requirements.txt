@@ -1,12 +1,1 @@
 pika
-redis
-pillow
-torch
-torchvision
-transformers
-langchain
-sentencepiece
-accelerate
-safetensors
-numpy
-requests
