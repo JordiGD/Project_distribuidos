@@ -1,0 +1,6 @@
+flask
+pika
+pillow
+redis
+requests
+uuid

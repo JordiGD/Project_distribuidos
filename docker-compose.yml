@@ -36,17 +36,6 @@ services:
     networks:
       - project_network
 
-  redis:
-    image: redis:7-alpine
-    container_name: redis_cache
-    restart: always
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - project_network
-
   backend:
     build: ./backend
     container_name: project_backend
@@ -54,7 +43,6 @@ services:
     depends_on:
       - traefik
       - rabbitmq
-      - redis
     env_file:
       - .env
     labels:
@@ -70,12 +58,10 @@ services:
     restart: always
     depends_on:
       - rabbitmq
-      - redis
     env_file:
       - .env
     environment:
       - RABBITMQ_HOST=rabbitmq
-      - REDIS_HOST=redis
     networks:
       - project_network
 
