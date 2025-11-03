@@ -36,6 +36,18 @@ services:
     networks:
       - project_network
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis_storage
+    restart: always
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - project_network
+
   backend:
     build: ./backend
     container_name: project_backend
@@ -43,25 +55,55 @@ services:
     depends_on:
       - traefik
       - rabbitmq
+      - redis
     env_file:
       - .env
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.backend.rule=Host(`identical.localhost`)"
+      - "traefik.http.routers.backend.rule=Host(`identical.localhost`) && PathPrefix(`/api`)"
       - "traefik.http.services.backend.loadbalancer.server.port=5000"
+      - "traefik.http.routers.backend.priority=2"
+    networks:
+      - project_network
+
+  frontend:
+    build: ./frontend
+    container_name: nutrition_frontend
+    restart: always
+    depends_on:
+      - traefik
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`identical.localhost`)"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+      - "traefik.http.routers.frontend.priority=1"
+    environment:
+      - REACT_APP_API_URL=http://identical.localhost/api
     networks:
       - project_network
 
   worker:
     build: ./worker
-    container_name: food_analysis_worker
+    container_name: moondream_worker
     restart: always
     depends_on:
       - rabbitmq
+      - redis
     env_file:
       - .env
     environment:
       - RABBITMQ_HOST=rabbitmq
+      - REDIS_HOST=redis
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     networks:
       - project_network
 
