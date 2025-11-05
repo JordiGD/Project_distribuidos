@@ -34,9 +34,12 @@ def get_rabbitmq_connection():
             parameters = pika.ConnectionParameters(
                 host=rabbitmq_host,
                 port=5672,
+                virtual_host='/',
                 credentials=credentials,
                 heartbeat=600,
-                blocked_connection_timeout=300
+                blocked_connection_timeout=300,
+                connection_attempts=3,
+                retry_delay=2
             )
             connection = pika.BlockingConnection(parameters)
             logger.info(f"Conectado a RabbitMQ exitosamente (intento {attempt + 1})")
@@ -53,43 +56,68 @@ def setup_analyzer():
     global analyzer
     if analyzer is None:
         try:
+            # Limpiar cache de GPU si está disponible
             if torch.cuda.is_available():
+                torch.cuda.empty_cache()
                 gpu_name = torch.cuda.get_device_name(0)
+                logger.info(f"GPU disponible: {gpu_name}")
                 
+                # Cargar modelo con configuración más estricta para dispositivos
                 analyzer = AutoModelForCausalLM.from_pretrained(
                     "vikhyatk/moondream2",
                     revision="2025-06-21",
                     trust_remote_code=True,
-                    dtype=torch.float16,
-                    device_map="auto",
+                    torch_dtype=torch.float16,
+                    device_map={'': 0},  # Forzar todo el modelo al GPU 0
                     low_cpu_mem_usage=True,
                     max_memory={0: "3.5GB"},
                 )
-                logger.info("Modelo cargado en GPU")
+                
+                # Verificar que todo el modelo esté en GPU
+                model_device = next(analyzer.parameters()).device
+                logger.info(f"Modelo cargado en dispositivo: {model_device}")
+                
+                # Verificar que todos los parámetros estén en el mismo dispositivo
+                devices = set(param.device for param in analyzer.parameters())
+                if len(devices) > 1:
+                    logger.warning(f"Modelo tiene parámetros en múltiples dispositivos: {devices}")
+                    # Forzar todo al GPU
+                    analyzer = analyzer.cuda(0)
+                    logger.info("Modelo movido completamente a GPU 0")
+                
             else:
                 logger.info("GPU no disponible, cargando modelo en CPU...")
                 analyzer = AutoModelForCausalLM.from_pretrained(
                     "vikhyatk/moondream2",
                     revision="2025-06-21", 
                     trust_remote_code=True,
-                    dtype=torch.float32,
+                    torch_dtype=torch.float32,
+                    device_map={'': 'cpu'},  # Forzar todo el modelo a CPU
                     low_cpu_mem_usage=True,
                 )
-                analyzer = analyzer.to('cpu')
-                logger.info("Modelo cargado en CPU")
+                
+                model_device = next(analyzer.parameters()).device
+                logger.info(f"Modelo cargado en dispositivo: {model_device}")
             
             device = "GPU" if torch.cuda.is_available() else "CPU"
             logger.info(f"Analizador listo en {device}")
+            
         except Exception as e:
             logger.error(f"Error cargando el analizador de nutrición: {e}")
             try:
-                logger.info("Intentando cargar modelo sin device_map...")
+                logger.info("Intentando cargar modelo con configuración de fallback...")
+                # Fallback sin device_map específico
                 analyzer = AutoModelForCausalLM.from_pretrained(
                     "vikhyatk/moondream2",
                     revision="2025-06-21",
                     trust_remote_code=True,
+                    torch_dtype=torch.float32,
                 )
-                logger.info("Modelo cargado exitosamente como fallback")
+                
+                # Mover explícitamente a CPU como fallback seguro
+                analyzer = analyzer.to('cpu')
+                logger.info("Modelo cargado exitosamente en CPU como fallback")
+                
             except Exception as e2:
                 logger.error(f"Error en fallback: {e2}")
                 analyzer = None
@@ -204,25 +232,55 @@ def callback(ch, method, properties, body):
 def extract_nutrition_value(text: str, nutrient_keyword: str) -> float:
     import re
     try:
-        pattern = rf"{nutrient_keyword}[^0-9]*(\d+(?:\.\d+)?)"
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return float(match.group(1))
+        patterns = [
+            rf"{nutrient_keyword}[^:]*:\s*(\d+(?:\.\d+)?)\s*(?:g|kcal|cal)?",
+            rf"{nutrient_keyword}[^0-9]*(\d+(?:\.\d+)?)\s*(?:g|kcal|cal)?",
+            rf"(\d+(?:\.\d+)?)\s*(?:g|kcal|cal)?\s*{nutrient_keyword}",
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                value = float(match.group(1))
+                logger.debug(f"Extraído {nutrient_keyword}: {value}")
+                return value
+        
+        logger.debug(f"No se pudo extraer valor para {nutrient_keyword} del texto: {text}")
         return 0.0
-    except:
+    except Exception as e:
+        logger.debug(f"Error extrayendo {nutrient_keyword}: {e}")
         return 0.0
 
 def extract_food_type(text: str) -> str:
     try:
         import re
-        pattern = r"comida[^:]*:\s*([^,\n]+)"
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
+        patterns = [
+            r"comida:\s*([^\n\r]+)",
+            r"alimento:\s*([^\n\r]+)",
+            r"tipo:\s*([^\n\r]+)",
+        ]
         
-        words = text.split()[:10]
-        return " ".join(words) if words else "Alimento no identificado"
-    except:
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                food_name = match.group(1).strip()
+                food_name = re.sub(r'[.,!?]+$', '', food_name)
+                logger.debug(f"Tipo de comida extraído: {food_name}")
+                return food_name
+        
+        lines = text.split('\n')
+        for line in lines:
+            if line.strip() and not any(keyword in line.lower() for keyword in ['calorías', 'proteínas', 'carbohidratos', 'grasas']):
+                words = line.strip().split()[:4]
+                if words:
+                    result = " ".join(words)
+                    logger.debug(f"Tipo de comida inferido: {result}")
+                    return result
+        
+        logger.debug("No se pudo extraer tipo de comida")
+        return "Alimento no identificado"
+    except Exception as e:
+        logger.debug(f"Error extrayendo tipo de comida: {e}")
         return "Alimento no identificado"
 
 def query_nutrition_analyzer(image: Image.Image, analyzer):
@@ -241,23 +299,84 @@ def query_nutrition_analyzer(image: Image.Image, analyzer):
             new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
             image = image.resize(new_size, Image.Resampling.LANCZOS)
         
-        device = "GPU" if torch.cuda.is_available() else "CPU"
-        logger.info(f"Iniciando análisis en {device}")
+        model_device = next(analyzer.parameters()).device
+        device_name = "GPU" if model_device.type == 'cuda' else "CPU"
+        logger.info(f"Iniciando análisis en {device_name} (device: {model_device})")
         
-        question = "Analiza esta comida. Responde: Calorías: X, Proteínas: X g, Carbohidratos: X g, Grasas: X g, Comida: nombre"
+        question = """Analiza detalladamente esta comida y proporciona su información nutricional. 
+        Identifica qué tipo de alimento es y estima los valores nutricionales por porción mostrada.
         
-        raw_result = analyzer.query(image, question=question)
+        Responde EXACTAMENTE en este formato:
+        Comida: [nombre específico del alimento]
+        Calorías: [número] kcal
+        Proteínas: [número] g
+        Carbohidratos: [número] g
+        Grasas: [número] g
+        
+        Ejemplo de respuesta correcta:
+        Comida: Pizza margherita
+        Calorías: 280 kcal
+        Proteínas: 12 g
+        Carbohidratos: 35 g
+        Grasas: 10 g
+        
+        Proporciona valores numéricos reales estimados basados en la porción visible."""
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        try:
+            with torch.no_grad():
+                logger.info(f"Realizando consulta con modelo en: {next(analyzer.parameters()).device}")
+                
+                if model_device.type == 'cuda':
+                    with torch.cuda.device(model_device):
+                        raw_result = analyzer.query(image, question=question)
+                else:
+                    raw_result = analyzer.query(image, question=question)
+                    
+        except RuntimeError as e:
+            if "Expected all tensors to be on the same device" in str(e):
+                logger.warning(f"Error de dispositivo detectado: {e}")
+                logger.info("Intentando mover el modelo completamente a CPU como fallback...")
+                
+                analyzer_cpu = analyzer.cpu()
+                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                
+                with torch.no_grad():
+                    raw_result = analyzer_cpu.query(image, question=question)
+                
+                if torch.cuda.is_available():
+                    try:
+                        analyzer = analyzer_cpu.cuda()
+                        logger.info("Modelo movido de vuelta a GPU")
+                    except:
+                        logger.warning("No se pudo mover el modelo de vuelta a GPU")
+            else:
+                raise e
+            
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         logger.info(f"Análisis completado")
+        logger.info(f"Resultado bruto del modelo: {raw_result}")
+        
+        calories = extract_nutrition_value(raw_result, 'calor')
+        proteins = extract_nutrition_value(raw_result, 'prote') 
+        carbohydrates = extract_nutrition_value(raw_result, 'carboh')
+        fats = extract_nutrition_value(raw_result, 'gras')
+        food_type = extract_food_type(raw_result)
         
         structured_result = {
             'raw_analysis': raw_result,
-            'calories': extract_nutrition_value(raw_result, 'calor'),
-            'proteins': extract_nutrition_value(raw_result, 'prote'),
-            'carbohydrates': extract_nutrition_value(raw_result, 'carboh'),
-            'fats': extract_nutrition_value(raw_result, 'gras'),
-            'food_type': extract_food_type(raw_result)
+            'calories': calories,
+            'proteins': proteins, 
+            'carbohydrates': carbohydrates,
+            'fats': fats,
+            'food_type': food_type
         }
+        
+        logger.info(f"Análisis estructurado - Comida: {food_type}, Calorías: {calories}, Proteínas: {proteins}g, Carbohidratos: {carbohydrates}g, Grasas: {fats}g")
         
         return structured_result
         

@@ -58,7 +58,7 @@ def setup_rabbitmq():
         channel.queue_declare(queue=RABBITMQ_QUEUE, durable=True)
         
         connection.close()
-        
+        print("RabbitMQ configurado correctamente")
         return True
     except Exception as e:
         print(f"Error configurando RabbitMQ: {e}")
