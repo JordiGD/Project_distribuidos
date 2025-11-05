@@ -60,7 +60,7 @@ def setup_analyzer():
                     "vikhyatk/moondream2",
                     revision="2025-06-21",
                     trust_remote_code=True,
-                    torch_dtype=torch.float16,
+                    dtype=torch.float16,
                     device_map="auto",
                     low_cpu_mem_usage=True,
                     max_memory={0: "3.5GB"},
@@ -72,14 +72,14 @@ def setup_analyzer():
                     "vikhyatk/moondream2",
                     revision="2025-06-21", 
                     trust_remote_code=True,
-                    torch_dtype=torch.float32,
+                    dtype=torch.float32,
                     low_cpu_mem_usage=True,
                 )
                 analyzer = analyzer.to('cpu')
                 logger.info("Modelo cargado en CPU")
             
             device = "GPU" if torch.cuda.is_available() else "CPU"
-            logger.info(f"Analizador listo en {device} - Tiempo estimado por imagen: {5-15 if torch.cuda.is_available() else '30-60'} segundos")
+            logger.info(f"Analizador listo en {device}")
         except Exception as e:
             logger.error(f"Error cargando el analizador de nutrición: {e}")
             try:
@@ -213,7 +213,6 @@ def extract_nutrition_value(text: str, nutrient_keyword: str) -> float:
         return 0.0
 
 def extract_food_type(text: str) -> str:
-    """Extrae el tipo de comida del texto de análisis"""
     try:
         import re
         pattern = r"comida[^:]*:\s*([^,\n]+)"
@@ -234,10 +233,8 @@ def query_nutrition_analyzer(image: Image.Image, analyzer):
         original_size = image.size
         if torch.cuda.is_available():
             max_size = 768
-            time_estimate = "5-15 segundos"
         else:
             max_size = 512
-            time_estimate = "30-60 segundos"
             
         if max(image.size) > max_size:
             ratio = max_size / max(image.size)
@@ -245,18 +242,13 @@ def query_nutrition_analyzer(image: Image.Image, analyzer):
             image = image.resize(new_size, Image.Resampling.LANCZOS)
         
         device = "GPU" if torch.cuda.is_available() else "CPU"
-        logger.info(f"Iniciando análisis en {device} (estimado: {time_estimate})...")
+        logger.info(f"Iniciando análisis en {device}")
         
         question = "Analiza esta comida. Responde: Calorías: X, Proteínas: X g, Carbohidratos: X g, Grasas: X g, Comida: nombre"
         
-        import time
-        start_time = time.time()
         raw_result = analyzer.query(image, question=question)
-        end_time = time.time()
-        
-        analysis_time = end_time - start_time
-        logger.info(f"Análisis completado en {analysis_time:.2f} segundos")
-        logger.info(f"Resultado bruto: {raw_result}")
+
+        logger.info(f"Análisis completado")
         
         structured_result = {
             'raw_analysis': raw_result,
@@ -288,8 +280,6 @@ def start_consuming():
     try:
         logger.info("Inicializando worker...")
         
-        setup_analyzer()
-        
         redis_conn = get_redis_client()
         if not redis_conn:
             logger.error("No se puede conectar a Redis. Deteniendo worker.")
@@ -303,8 +293,11 @@ def start_consuming():
             
         channel.basic_consume(
                 queue=queue_name,
-                on_message_callback=callback
+                on_message_callback=callback,
+                auto_ack=False
             )
+        
+        setup_analyzer()
             
         logger.info("Worker iniciado. Esperando mensajes...")
         channel.start_consuming()

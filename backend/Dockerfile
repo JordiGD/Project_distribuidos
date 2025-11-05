@@ -6,6 +6,7 @@ COPY requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
+COPY imagenprueba.jpg /app/imagenprueba.jpg
 
 EXPOSE 5000
 

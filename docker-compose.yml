@@ -66,23 +66,6 @@ services:
     networks:
       - project_network
 
-  frontend:
-    build: ./frontend
-    container_name: nutrition_frontend
-    restart: always
-    depends_on:
-      - traefik
-      - backend
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.frontend.rule=Host(`identical.localhost`)"
-      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
-      - "traefik.http.routers.frontend.priority=1"
-    environment:
-      - REACT_APP_API_URL=http://identical.localhost/api
-    networks:
-      - project_network
-
   worker:
     build: ./worker
     container_name: moondream_worker
