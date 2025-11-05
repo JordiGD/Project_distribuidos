@@ -56,32 +56,26 @@ def setup_analyzer():
     global analyzer
     if analyzer is None:
         try:
-            # Limpiar cache de GPU si está disponible
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 gpu_name = torch.cuda.get_device_name(0)
                 logger.info(f"GPU disponible: {gpu_name}")
-                
-                # Cargar modelo con configuración más estricta para dispositivos
                 analyzer = AutoModelForCausalLM.from_pretrained(
                     "vikhyatk/moondream2",
                     revision="2025-06-21",
                     trust_remote_code=True,
                     torch_dtype=torch.float16,
-                    device_map={'': 0},  # Forzar todo el modelo al GPU 0
+                    device_map={'': 0},
                     low_cpu_mem_usage=True,
                     max_memory={0: "3.5GB"},
                 )
                 
-                # Verificar que todo el modelo esté en GPU
                 model_device = next(analyzer.parameters()).device
                 logger.info(f"Modelo cargado en dispositivo: {model_device}")
                 
-                # Verificar que todos los parámetros estén en el mismo dispositivo
                 devices = set(param.device for param in analyzer.parameters())
                 if len(devices) > 1:
                     logger.warning(f"Modelo tiene parámetros en múltiples dispositivos: {devices}")
-                    # Forzar todo al GPU
                     analyzer = analyzer.cuda(0)
                     logger.info("Modelo movido completamente a GPU 0")
                 
@@ -92,7 +86,7 @@ def setup_analyzer():
                     revision="2025-06-21", 
                     trust_remote_code=True,
                     torch_dtype=torch.float32,
-                    device_map={'': 'cpu'},  # Forzar todo el modelo a CPU
+                    device_map={'': 'cpu'},
                     low_cpu_mem_usage=True,
                 )
                 
@@ -105,16 +99,12 @@ def setup_analyzer():
         except Exception as e:
             logger.error(f"Error cargando el analizador de nutrición: {e}")
             try:
-                logger.info("Intentando cargar modelo con configuración de fallback...")
-                # Fallback sin device_map específico
                 analyzer = AutoModelForCausalLM.from_pretrained(
                     "vikhyatk/moondream2",
                     revision="2025-06-21",
                     trust_remote_code=True,
                     torch_dtype=torch.float32,
                 )
-                
-                # Mover explícitamente a CPU como fallback seguro
                 analyzer = analyzer.to('cpu')
                 logger.info("Modelo cargado exitosamente en CPU como fallback")
                 
@@ -288,42 +278,16 @@ def query_nutrition_analyzer(image: Image.Image, analyzer):
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
-        original_size = image.size
-        if torch.cuda.is_available():
-            max_size = 768
-        else:
-            max_size = 512
-            
-        if max(image.size) > max_size:
-            ratio = max_size / max(image.size)
-            new_size = (int(image.size[0] * ratio), int(image.size[1] * ratio))
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
-        
         model_device = next(analyzer.parameters()).device
         device_name = "GPU" if model_device.type == 'cuda' else "CPU"
         logger.info(f"Iniciando análisis en {device_name} (device: {model_device})")
         
-        question = """Analiza detalladamente esta comida y proporciona su información nutricional. 
-        Identifica qué tipo de alimento es y estima los valores nutricionales por porción mostrada.
-        
-        Responde EXACTAMENTE en este formato:
-        Comida: [nombre específico del alimento]
-        Calorías: [número] kcal
-        Proteínas: [número] g
-        Carbohidratos: [número] g
-        Grasas: [número] g
-        
-        Ejemplo de respuesta correcta:
-        Comida: Pizza margherita
-        Calorías: 280 kcal
-        Proteínas: 12 g
-        Carbohidratos: 35 g
-        Grasas: 10 g
-        
-        Proporciona valores numéricos reales estimados basados en la porción visible."""
+        question = "¿Qué comida ves en esta imagen? Describe los alimentos y estima las calorías, proteínas, carbohidratos y grasas."
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        
+        logger.info(f"Imagen para análisis - Tamaño: {image.size}, Modo: {image.mode}")
         
         try:
             with torch.no_grad():
@@ -361,11 +325,17 @@ def query_nutrition_analyzer(image: Image.Image, analyzer):
         logger.info(f"Análisis completado")
         logger.info(f"Resultado bruto del modelo: {raw_result}")
         
-        calories = extract_nutrition_value(raw_result, 'calor')
-        proteins = extract_nutrition_value(raw_result, 'prote') 
-        carbohydrates = extract_nutrition_value(raw_result, 'carboh')
-        fats = extract_nutrition_value(raw_result, 'gras')
-        food_type = extract_food_type(raw_result)
+        if isinstance(raw_result, dict) and 'answer' in raw_result:
+            analysis_text = raw_result['answer']
+            logger.info(f"Texto extraído para análisis: {analysis_text}")
+        else:
+            analysis_text = str(raw_result)
+        
+        calories = extract_nutrition_value(analysis_text, 'calor')
+        proteins = extract_nutrition_value(analysis_text, 'prote') 
+        carbohydrates = extract_nutrition_value(analysis_text, 'carboh')
+        fats = extract_nutrition_value(analysis_text, 'gras')
+        food_type = extract_food_type(analysis_text)
         
         structured_result = {
             'raw_analysis': raw_result,
