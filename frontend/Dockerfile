@@ -8,10 +8,14 @@ WORKDIR /app
 COPY package*.json ./
 
 # Instalar dependencias
-RUN npm install --omit=dev
+RUN npm install
 
 # Copiar código fuente
 COPY . .
+
+# Argumento para la URL de la API
+ARG REACT_APP_API_URL=http://identical.localhost
+ENV REACT_APP_API_URL=$REACT_APP_API_URL
 
 # Construir la aplicación
 RUN npm run build

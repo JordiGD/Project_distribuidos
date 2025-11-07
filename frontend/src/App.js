@@ -41,18 +41,23 @@ function App() {
     const poll = async () => {
       try {
         attempts++;
+        console.log(`Polling attempt ${attempts} for task ${taskId}`);
         const response = await getResults(taskId);
+        console.log('Poll response:', response);
         
         if (response.status === 'completed') {
+          console.log('Analysis completed! Results:', response.results);
           setResults(response.results);
           setIsLoading(false);
         } else if (response.status === 'processing' && attempts < maxAttempts) {
+          console.log(`Still processing... attempt ${attempts}/${maxAttempts}`);
           setTimeout(poll, 5000);
         } else {
           setIsLoading(false);
           alert('Tiempo de espera agotado');
         }
       } catch (err) {
+        console.error('Error polling results:', err);
         setIsLoading(false);
         alert('Error: ' + err.message);
       }

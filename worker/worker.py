@@ -62,7 +62,6 @@ def setup_analyzer():
                 gpu_name = torch.cuda.get_device_name(0)
                 logger.info(f"GPU disponible: {gpu_name}")
                 
-                # Determinar qué modelo usar basado en memoria GPU disponible
                 gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
                 logger.info(f"Memoria GPU total: {gpu_memory_gb:.1f} GB")
                 
@@ -76,7 +75,6 @@ def setup_analyzer():
                     model_name = "llava-hf/llava-1.5-7b-hf"
                     logger.info("Usando LLaVA 1.5 7B (GPU limitada)")
                 
-                # Cargar processor y modelo según la versión
                 logger.info(f"Cargando processor para {model_name}...")
                 if "llava-v1.6" in model_name or "llava-next" in model_name:
                     processor = LlavaNextProcessor.from_pretrained(model_name, use_fast=True)
@@ -85,10 +83,8 @@ def setup_analyzer():
                     processor = LlavaProcessor.from_pretrained(model_name, use_fast=True)  
                     model_class = LlavaForConditionalGeneration
                 
-                # Cargar modelo con configuración optimizada
                 logger.info(f"Cargando modelo {model_name}...")
                 
-                # Configurar cuantización si es necesario
                 quantization_config = None
                 if gpu_memory_gb < 12:
                     from transformers import BitsAndBytesConfig
@@ -112,7 +108,7 @@ def setup_analyzer():
                 
             else:
                 logger.info("GPU no disponible, cargando modelo en CPU...")
-                model_name = "llava-hf/llava-1.5-7b-hf"  # Modelo más ligero para CPU
+                model_name = "llava-hf/llava-1.5-7b-hf"
                 
                 processor = LlavaProcessor.from_pretrained(model_name, use_fast=True)
                 analyzer = LlavaForConditionalGeneration.from_pretrained(
@@ -179,7 +175,7 @@ def get_redis_client():
     return redis_client
 
 def callback(ch, method, properties, body):
-    global analyzer
+    global analyzer, processor
     try:
         message = json.loads(body.decode('utf-8'))
         task_id = message['task_id']
@@ -213,13 +209,13 @@ def callback(ch, method, properties, body):
             logger.info(f"Comenzando análisis nutricional para: {filename}")
             nutrition_result = query_nutrition_analyzer(image, analyzer, processor)
             logger.info(f"Análisis completado para tarea: {task_id}")
-            result = {
-                'task_id': task_id,
-                'filename': filename,
-                'analysis': nutrition_result,
-                'status': 'completed',
-                'timestamp': str(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')
-            }
+            
+            nutrition_result['task_id'] = task_id
+            nutrition_result['filename'] = filename
+            nutrition_result['status'] = 'completed'
+            nutrition_result['timestamp'] = str(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')
+            
+            result = nutrition_result
             
         except Exception as e:
             logger.error(f"Error en análisis nutricional: {e}")
@@ -318,32 +314,21 @@ def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
         device_name = "GPU" if model_device.type == 'cuda' else "CPU"
         logger.info(f"Iniciando análisis LLaVA-Next en {device_name} (device: {model_device})")
         
-        # Prompt optimizado para LLaVA-Next y análisis nutricional
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": """Analiza esta imagen de comida de manera detallada y precisa. 
-                    
-                    Identifica todos los alimentos visibles y calcula los valores nutricionales aproximados para la porción total mostrada en la imagen.
-                    
-                    Proporciona tu respuesta en este formato exacto:
-                    Comida: [descripción específica de lo que ves]
-                    Calorías: [número] kcal
-                    Proteínas: [número] g
-                    Carbohidratos: [número] g
-                    Grasas: [número] g
-                    Fibra: [número] g
-                    Confianza: [porcentaje]%
-                    
-                    Sé específico sobre qué alimentos ves y proporciona estimaciones nutricionales realistas basadas en las porciones visibles."""},
-                    {"type": "image"}
-                ]
-            }
-        ]
-        
-        # Preparar inputs usando el processor de LLaVA-Next  
-        prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
+        prompt = """[INST] <image>
+Analiza esta imagen de comida de manera detallada y precisa.
+
+Identifica todos los alimentos visibles y calcula los valores nutricionales aproximados para la porción total mostrada en la imagen.
+
+Proporciona tu respuesta en este formato exacto:
+Comida: [descripción específica de lo que ves]
+Calorías: [número] kcal
+Proteínas: [número] g
+Carbohidratos: [número] g
+Grasas: [número] g
+Fibra: [número] g
+Confianza: [porcentaje]%
+
+Sé específico sobre qué alimentos ves y proporciona estimaciones nutricionales realistas basadas en las porciones visibles. [/INST]"""
         
         logger.info(f"Imagen para análisis - Tamaño: {image.size}, Modo: {image.mode}")
         logger.info("Procesando imagen con LLaVA-Next...")
@@ -352,13 +337,11 @@ def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
             torch.cuda.empty_cache()
         
         try:
-            # Procesar inputs
-            inputs = processor(prompt, image, return_tensors="pt").to(model_device)
+            inputs = processor(text=prompt, images=image, return_tensors="pt").to(model_device)
             
             with torch.no_grad():
                 logger.info(f"Generando respuesta con LLaVA-Next en: {model_device}")
                 
-                # Generar respuesta
                 output = analyzer.generate(
                     **inputs,
                     max_new_tokens=512,
@@ -367,26 +350,25 @@ def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
                     pad_token_id=processor.tokenizer.eos_token_id
                 )
                 
-                # Decodificar respuesta
                 generated_text = processor.decode(output[0], skip_special_tokens=True)
                 
-                # Extraer solo la respuesta generada (sin el prompt)
-                if "assistant\n\n" in generated_text:
-                    raw_result = generated_text.split("assistant\n\n")[-1].strip()
+                if "[/INST]" in generated_text:
+                    raw_result = generated_text.split("[/INST]")[-1].strip()
+                elif "assistant" in generated_text.lower():
+                    raw_result = generated_text.split("assistant")[-1].strip()
                 else:
-                    raw_result = generated_text.split(prompt)[-1].strip()
+                    raw_result = generated_text.strip()
                     
         except RuntimeError as e:
             if "Expected all tensors to be on the same device" in str(e) or "CUDA out of memory" in str(e):
                 logger.warning(f"Error GPU detectado: {e}")
                 logger.info("Intentando procesar en CPU como fallback...")
                 
-                # Fallback a CPU
                 analyzer_cpu = analyzer.cpu()
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                 
-                inputs_cpu = processor(prompt, image, return_tensors="pt").to('cpu')
+                inputs_cpu = processor(text=prompt, images=image, return_tensors="pt").to('cpu')
                 
                 with torch.no_grad():
                     output = analyzer_cpu.generate(
@@ -399,12 +381,13 @@ def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
                     
                     generated_text = processor.decode(output[0], skip_special_tokens=True)
                     
-                    if "assistant\n\n" in generated_text:
-                        raw_result = generated_text.split("assistant\n\n")[-1].strip()
+                    if "[/INST]" in generated_text:
+                        raw_result = generated_text.split("[/INST]")[-1].strip()
+                    elif "assistant" in generated_text.lower():
+                        raw_result = generated_text.split("assistant")[-1].strip()
                     else:
-                        raw_result = generated_text.split(prompt)[-1].strip()
+                        raw_result = generated_text.strip()
                 
-                # Intentar mover de vuelta a GPU
                 if torch.cuda.is_available():
                     try:
                         analyzer = analyzer_cpu.cuda()
@@ -420,11 +403,9 @@ def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
         logger.info(f"Análisis LLaVA-Next completado")
         logger.info(f"Respuesta completa del modelo: {raw_result}")
         
-        # LLaVA-Next devuelve texto directo, no diccionario
         analysis_text = str(raw_result).strip()
         logger.info(f"Texto para parsing nutricional: {analysis_text}")
         
-        # Extraer valores nutricionales con patrones mejorados
         calories = extract_nutrition_value(analysis_text, 'calor')
         proteins = extract_nutrition_value(analysis_text, 'prote') 
         carbohydrates = extract_nutrition_value(analysis_text, 'carboh')
@@ -432,22 +413,47 @@ def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
         fiber = extract_nutrition_value(analysis_text, 'fibra')
         food_type = extract_food_type(analysis_text)
         
-        # Extraer nivel de confianza si está disponible
         confidence = extract_nutrition_value(analysis_text, 'confianza')
         
         structured_result = {
-            'raw_analysis': raw_result,
-            'calories': calories,
-            'proteins': proteins, 
-            'carbohydrates': carbohydrates,
-            'fats': fats,
-            'fiber': fiber,
+            'nombre': food_type,
+            'alimento': food_type,
             'food_type': food_type,
-            'confidence': confidence,
+            'calorías': {
+                'value': calories,
+                'unit': 'kcal',
+                'description': f'Energía proporcionada por el alimento'
+            },
+            'proteínas': {
+                'value': proteins,
+                'unit': 'g',
+                'description': 'Esenciales para el crecimiento y reparación muscular'
+            },
+            'carbohidratos': {
+                'value': carbohydrates,
+                'unit': 'g',
+                'description': 'Fuente principal de energía'
+            },
+            'grasas': {
+                'value': fats,
+                'unit': 'g',
+                'description': 'Importantes para la absorción de vitaminas'
+            },
+            'fibra': {
+                'value': fiber,
+                'unit': 'g',
+                'description': 'Ayuda a la digestión y salud intestinal'
+            },
+            'confianza': {
+                'value': confidence,
+                'unit': '%',
+                'description': 'Nivel de confianza del análisis'
+            },
+            'raw_analysis': raw_result,
             'model': 'LLaVA-Next'
         }
         
-        logger.info(f"Análisis LLaVA estructurado - Comida: {food_type}, Calorías: {calories}, Proteínas: {proteins}g, Carbohidratos: {carbohydrates}g, Grasas: {fats}g, Confianza: {confidence}%")
+        logger.info(f"Análisis LLaVA estructurado - Comida: {food_type}, Calorías: {calories}, Proteínas: {proteins}g, Carbohidratos: {carbohydrates}g, Grasas: {fats}g, Fibra: {fiber}g, Confianza: {confidence}%")
         
         return structured_result
         

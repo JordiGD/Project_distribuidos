@@ -13,6 +13,14 @@ from typing import Optional
 
 app = FastAPI(title="IdentiCal", version="1.0.0")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'rabbitmq')
 RABBITMQ_USER = os.getenv('RABBITMQ_USER', 'admin')
 RABBITMQ_PASS = os.getenv('RABBITMQ_PASS', 'password')

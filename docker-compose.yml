@@ -81,7 +81,7 @@ services:
 
   worker:
     build: ./worker
-    container_name: moondream_worker
+    container_name: model_IA_worker
     restart: always
     depends_on:
       rabbitmq:
@@ -102,6 +102,25 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    networks:
+      - project_network
+
+  frontend:
+    build: ./frontend
+    container_name: project_frontend
+    restart: always
+    depends_on:
+      traefik:
+        condition: service_started
+      backend:
+        condition: service_started
+    environment:
+      - REACT_APP_API_URL=http://identical.localhost
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`identical.localhost`)"
+      - "traefik.http.services.frontend.loadbalancer.server.port=3000"
+      - "traefik.http.routers.frontend.priority=1"
     networks:
       - project_network
 

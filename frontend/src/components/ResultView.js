@@ -3,36 +3,53 @@ import React, { useEffect, useState } from 'react';
 const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
   const [displayCalories, setDisplayCalories] = useState(0);
   const [foodName, setFoodName] = useState('Analizando...');
+  const [foodDescription, setFoodDescription] = useState('');
   const [nutritionData, setNutritionData] = useState({
     proteins: '0 g',
     carbs: '0 g', 
-    fats: '0 g'
+    fats: '0 g',
+    fiber: '0 g'
   });
 
   useEffect(() => {
+    console.log('ResultView - results:', results);
+    console.log('ResultView - isLoading:', isLoading);
+    
     if (results && !isLoading) {
       // Extraer calorías del resultado
       const calories = results.calorías || results.calories || results.Calorías || 0;
-      setDisplayCalories(typeof calories === 'object' ? calories.value || 0 : calories);
+      const calorieValue = typeof calories === 'object' ? calories.value || 0 : calories;
+      setDisplayCalories(Math.round(calorieValue));
       
       // Extraer nombre del alimento si está disponible
-      setFoodName(results.nombre || results.name || results.alimento || 'Alimento analizado');
+      const name = results.nombre || results.name || results.alimento || results.food_type || 'Alimento analizado';
+      setFoodName(name);
+      
+      // Extraer descripción del análisis raw
+      const rawAnalysis = results.raw_analysis || '';
+      setFoodDescription(rawAnalysis);
       
       // Extraer datos nutricionales
-      setNutritionData({
+      const newNutritionData = {
         proteins: formatNutrient(results.proteínas || results.proteins || results.Proteínas),
         carbs: formatNutrient(results.carbohidratos || results.carbohydrates || results.Carbohidratos),
-        fats: formatNutrient(results.grasas || results.fats || results.Grasas)
-      });
+        fats: formatNutrient(results.grasas || results.fats || results.Grasas),
+        fiber: formatNutrient(results.fibra || results.fiber)
+      };
+      
+      console.log('Nutrition data extracted:', newNutritionData);
+      setNutritionData(newNutritionData);
     }
   }, [results, isLoading]);
 
   const formatNutrient = (value) => {
     if (!value) return '0 g';
     if (typeof value === 'object') {
-      return `${value.value || 0} ${value.unit || 'g'}`;
+      const num = value.value || 0;
+      const unit = value.unit || 'g';
+      return `${Math.round(num * 10) / 10} ${unit}`;
     }
-    return typeof value === 'number' ? `${value} g` : value;
+    return typeof value === 'number' ? `${Math.round(value * 10) / 10} g` : value;
   };
 
   return (
@@ -72,7 +89,11 @@ const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
                       <p className="calories-number">{isLoading ? '...' : displayCalories}</p>
                       <p className="calories-label">Calorías</p>
                     </div>
-                    <p className="disclaimer">Los valores son aproximados y pueden variar.</p>
+                    {!isLoading && foodDescription && (
+                      <div className="food-description">
+                        <p>{foodDescription}</p>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -105,6 +126,16 @@ const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
                       <p className="nutrition-value">{isLoading ? '...' : nutritionData.fats}</p>
                     </div>
                   </div>
+
+                  {!isLoading && nutritionData.fiber && nutritionData.fiber !== '0 g' && (
+                    <div className="nutrition-card">
+                      <span className="material-symbols-outlined nutrition-icon">grass</span>
+                      <div>
+                        <p className="nutrition-label">Fibra</p>
+                        <p className="nutrition-value">{nutritionData.fiber}</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
