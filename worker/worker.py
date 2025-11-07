@@ -6,7 +6,10 @@ import redis
 import torch
 import base64
 import io
-from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, LlavaProcessor, LlavaForConditionalGeneration
+import re
+from typing import Optional
+from worker.NutritionInfo import NutritionInfo
+from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, LlavaProcessor, LlavaForConditionalGeneration, BitsAndBytesConfig
 from PIL import Image
 
 logging.basicConfig(level=logging.INFO)
@@ -87,7 +90,6 @@ def setup_analyzer():
                 
                 quantization_config = None
                 if gpu_memory_gb < 12:
-                    from transformers import BitsAndBytesConfig
                     quantization_config = BitsAndBytesConfig(
                         load_in_8bit=True,
                         llm_int8_threshold=6.0,
@@ -250,60 +252,72 @@ def callback(ch, method, properties, body):
     except Exception as e:
         logger.error(f"Error general procesando tarea: {e}")
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-   
-def extract_nutrition_value(text: str, nutrient_keyword: str) -> float:
-    import re
-    try:
-        patterns = [
-            rf"{nutrient_keyword}[^:]*:\s*(\d+(?:\.\d+)?)\s*(?:g|kcal|cal)?",
-            rf"{nutrient_keyword}[^0-9]*(\d+(?:\.\d+)?)\s*(?:g|kcal|cal)?",
-            rf"(\d+(?:\.\d+)?)\s*(?:g|kcal|cal)?\s*{nutrient_keyword}",
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                value = float(match.group(1))
-                logger.debug(f"Extraído {nutrient_keyword}: {value}")
-                return value
-        
-        logger.debug(f"No se pudo extraer valor para {nutrient_keyword} del texto: {text}")
-        return 0.0
-    except Exception as e:
-        logger.debug(f"Error extrayendo {nutrient_keyword}: {e}")
-        return 0.0
 
-def extract_food_type(text: str) -> str:
+def parse_nutrition_with_langchain(raw_text: str) -> NutritionInfo:
     try:
-        import re
-        patterns = [
-            r"comida:\s*([^\n\r]+)",
-            r"alimento:\s*([^\n\r]+)",
-            r"tipo:\s*([^\n\r]+)",
-        ]
+        def extract_value(text: str, keywords: list, default: float = 0) -> float:
+            for keyword in keywords:
+                patterns = [
+                    rf"{keyword}[^:]*:\s*(\d+(?:\.\d+)?)",
+                    rf"{keyword}[^\d]*(\d+(?:\.\d+)?)",
+                    rf"(\d+(?:\.\d+)?)\s*(?:g|kcal|cal)?\s*{keyword}",
+                ]
+                for pattern in patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match:
+                        return float(match.group(1))
+            return default
         
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                food_name = match.group(1).strip()
-                food_name = re.sub(r'[.,!?]+$', '', food_name)
-                logger.debug(f"Tipo de comida extraído: {food_name}")
-                return food_name
+        def extract_food_name(text: str) -> str:
+            patterns = [
+                r"[Cc]omida:\s*([^\n\r]+)",
+                r"[Aa]limento:\s*([^\n\r]+)",
+                r"[Tt]ipo:\s*([^\n\r]+)",
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, text)
+                if match:
+                    name = match.group(1).strip()
+                    name = re.sub(r'[.,!?]+$', '', name)
+                    return name
+            
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and not any(kw in line.lower() for kw in ['calorías', 'proteínas', 'carbohidratos', 'grasas', 'fibra']):
+                    words = line.split()[:8]
+                    if words:
+                        return " ".join(words)
+            
+            return "Alimento no identificado"
         
-        lines = text.split('\n')
-        for line in lines:
-            if line.strip() and not any(keyword in line.lower() for keyword in ['calorías', 'proteínas', 'carbohidratos', 'grasas']):
-                words = line.strip().split()[:4]
-                if words:
-                    result = " ".join(words)
-                    logger.debug(f"Tipo de comida inferido: {result}")
-                    return result
+        nutrition_data = NutritionInfo(
+            comida=extract_food_name(raw_text),
+            calorias=extract_value(raw_text, ['calor', 'kcal', 'cal'], 0),
+            proteinas=extract_value(raw_text, ['prote', 'protein'], 0),
+            carbohidratos=extract_value(raw_text, ['carboh', 'carb', 'hidrat'], 0),
+            grasas=extract_value(raw_text, ['gras', 'fat', 'lip'], 0),
+            fibra=extract_value(raw_text, ['fibra', 'fiber'], 0),
+            confianza=extract_value(raw_text, ['confianza', 'confidence', 'certeza'], 85)
+        )
         
-        logger.debug("No se pudo extraer tipo de comida")
-        return "Alimento no identificado"
+        logger.info(f"Datos parseados con Pydantic: {nutrition_data.comida}")
+        logger.info(f"   Calorías: {nutrition_data.calorias}, Proteínas: {nutrition_data.proteinas}g, "
+                   f"Carbohidratos: {nutrition_data.carbohidratos}g, Grasas: {nutrition_data.grasas}g")
+        
+        return nutrition_data
+        
     except Exception as e:
-        logger.debug(f"Error extrayendo tipo de comida: {e}")
-        return "Alimento no identificado"
+        logger.error(f"Error parseando con LangChain: {e}")
+        return NutritionInfo(
+            comida="Error al analizar",
+            calorias=0,
+            proteinas=0,
+            carbohidratos=0,
+            grasas=0,
+            fibra=0,
+            confianza=0
+        )
 
 def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
     try:
@@ -406,46 +420,39 @@ Sé específico sobre qué alimentos ves y proporciona estimaciones nutricionale
         analysis_text = str(raw_result).strip()
         logger.info(f"Texto para parsing nutricional: {analysis_text}")
         
-        calories = extract_nutrition_value(analysis_text, 'calor')
-        proteins = extract_nutrition_value(analysis_text, 'prote') 
-        carbohydrates = extract_nutrition_value(analysis_text, 'carboh')
-        fats = extract_nutrition_value(analysis_text, 'gras')
-        fiber = extract_nutrition_value(analysis_text, 'fibra')
-        food_type = extract_food_type(analysis_text)
-        
-        confidence = extract_nutrition_value(analysis_text, 'confianza')
+        nutrition_info = parse_nutrition_with_langchain(analysis_text)
         
         structured_result = {
-            'nombre': food_type,
-            'alimento': food_type,
-            'food_type': food_type,
+            'nombre': nutrition_info.comida,
+            'alimento': nutrition_info.comida,
+            'food_type': nutrition_info.comida,
             'calorías': {
-                'value': calories,
+                'value': nutrition_info.calorias,
                 'unit': 'kcal',
-                'description': f'Energía proporcionada por el alimento'
+                'description': 'Energía proporcionada por el alimento'
             },
             'proteínas': {
-                'value': proteins,
+                'value': nutrition_info.proteinas,
                 'unit': 'g',
                 'description': 'Esenciales para el crecimiento y reparación muscular'
             },
             'carbohidratos': {
-                'value': carbohydrates,
+                'value': nutrition_info.carbohidratos,
                 'unit': 'g',
                 'description': 'Fuente principal de energía'
             },
             'grasas': {
-                'value': fats,
+                'value': nutrition_info.grasas,
                 'unit': 'g',
                 'description': 'Importantes para la absorción de vitaminas'
             },
             'fibra': {
-                'value': fiber,
+                'value': nutrition_info.fibra,
                 'unit': 'g',
                 'description': 'Ayuda a la digestión y salud intestinal'
             },
             'confianza': {
-                'value': confidence,
+                'value': nutrition_info.confianza,
                 'unit': '%',
                 'description': 'Nivel de confianza del análisis'
             },
@@ -453,7 +460,10 @@ Sé específico sobre qué alimentos ves y proporciona estimaciones nutricionale
             'model': 'LLaVA-Next'
         }
         
-        logger.info(f"Análisis LLaVA estructurado - Comida: {food_type}, Calorías: {calories}, Proteínas: {proteins}g, Carbohidratos: {carbohydrates}g, Grasas: {fats}g, Fibra: {fiber}g, Confianza: {confidence}%")
+        logger.info(f"Análisis Comida: {nutrition_info.comida}, "
+                   f"Calorías: {nutrition_info.calorias}, Proteínas: {nutrition_info.proteinas}g, "
+                   f"Carbohidratos: {nutrition_info.carbohidratos}g, Grasas: {nutrition_info.grasas}g, "
+                   f"Fibra: {nutrition_info.fibra}g, Confianza: {nutrition_info.confianza}%")
         
         return structured_result
         

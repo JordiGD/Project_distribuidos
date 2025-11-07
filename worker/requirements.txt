@@ -7,3 +7,8 @@ transformers>=4.40.0
 accelerate>=0.20.0
 bitsandbytes>=0.41.0
 sentencepiece>=0.1.99
+
+# LangChain para estructurar respuestas
+langchain>=0.1.0
+langchain-core>=0.1.0
+pydantic>=2.0.0
