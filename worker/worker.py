@@ -6,7 +6,7 @@ import redis
 import torch
 import base64
 import io
-from transformers import AutoModelForCausalLM
+from transformers import LlavaNextProcessor, LlavaNextForConditionalGeneration, LlavaProcessor, LlavaForConditionalGeneration
 from PIL import Image
 
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +16,7 @@ REDIS_HOST = os.getenv('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
 
 analyzer = None
+processor = None
 redis_client = None
 
 rabbitmq_host = os.getenv('RABBITMQ_HOST', 'rabbitmq')
@@ -53,65 +54,100 @@ def get_rabbitmq_connection():
                 raise
 
 def setup_analyzer():
-    global analyzer
-    if analyzer is None:
+    global analyzer, processor
+    if analyzer is None or processor is None:
         try:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 gpu_name = torch.cuda.get_device_name(0)
                 logger.info(f"GPU disponible: {gpu_name}")
-                analyzer = AutoModelForCausalLM.from_pretrained(
-                    "vikhyatk/moondream2",
-                    revision="2025-06-21",
-                    trust_remote_code=True,
-                    torch_dtype=torch.float16,
-                    device_map={'': 0},
+                
+                # Determinar qué modelo usar basado en memoria GPU disponible
+                gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                logger.info(f"Memoria GPU total: {gpu_memory_gb:.1f} GB")
+                
+                if gpu_memory_gb >= 16:
+                    model_name = "llava-hf/llava-v1.6-vicuna-13b-hf"
+                    logger.info("Usando LLaVA-Next 13B (requiere 16GB+ GPU)")
+                elif gpu_memory_gb >= 8:
+                    model_name = "llava-hf/llava-v1.6-mistral-7b-hf"  
+                    logger.info("Usando LLaVA-Next 7B (requiere 8GB+ GPU)")
+                else:
+                    model_name = "llava-hf/llava-1.5-7b-hf"
+                    logger.info("Usando LLaVA 1.5 7B (GPU limitada)")
+                
+                # Cargar processor y modelo según la versión
+                logger.info(f"Cargando processor para {model_name}...")
+                if "llava-v1.6" in model_name or "llava-next" in model_name:
+                    processor = LlavaNextProcessor.from_pretrained(model_name, use_fast=True)
+                    model_class = LlavaNextForConditionalGeneration
+                else:
+                    processor = LlavaProcessor.from_pretrained(model_name, use_fast=True)  
+                    model_class = LlavaForConditionalGeneration
+                
+                # Cargar modelo con configuración optimizada
+                logger.info(f"Cargando modelo {model_name}...")
+                
+                # Configurar cuantización si es necesario
+                quantization_config = None
+                if gpu_memory_gb < 12:
+                    from transformers import BitsAndBytesConfig
+                    quantization_config = BitsAndBytesConfig(
+                        load_in_8bit=True,
+                        llm_int8_threshold=6.0,
+                        llm_int8_has_fp16_weight=False,
+                    )
+                    logger.info("Usando cuantización 8-bit para GPU limitada")
+                
+                analyzer = model_class.from_pretrained(
+                    model_name,
+                    dtype=torch.float16,
+                    device_map="auto",
                     low_cpu_mem_usage=True,
-                    max_memory={0: "3.5GB"},
+                    quantization_config=quantization_config,
                 )
                 
                 model_device = next(analyzer.parameters()).device
-                logger.info(f"Modelo cargado en dispositivo: {model_device}")
-                
-                devices = set(param.device for param in analyzer.parameters())
-                if len(devices) > 1:
-                    logger.warning(f"Modelo tiene parámetros en múltiples dispositivos: {devices}")
-                    analyzer = analyzer.cuda(0)
-                    logger.info("Modelo movido completamente a GPU 0")
+                logger.info(f"Modelo LLaVA-Next cargado en dispositivo: {model_device}")
                 
             else:
                 logger.info("GPU no disponible, cargando modelo en CPU...")
-                analyzer = AutoModelForCausalLM.from_pretrained(
-                    "vikhyatk/moondream2",
-                    revision="2025-06-21", 
-                    trust_remote_code=True,
-                    torch_dtype=torch.float32,
-                    device_map={'': 'cpu'},
+                model_name = "llava-hf/llava-1.5-7b-hf"  # Modelo más ligero para CPU
+                
+                processor = LlavaProcessor.from_pretrained(model_name, use_fast=True)
+                analyzer = LlavaForConditionalGeneration.from_pretrained(
+                    model_name,
+                    dtype=torch.float32,
+                    device_map="cpu",
                     low_cpu_mem_usage=True,
                 )
                 
-                model_device = next(analyzer.parameters()).device
-                logger.info(f"Modelo cargado en dispositivo: {model_device}")
+                logger.info(f"Modelo LLaVA cargado en CPU")
             
-            device = "GPU" if torch.cuda.is_available() else "CPU"
-            logger.info(f"Analizador listo en {device}")
+            device = "GPU" if torch.cuda.is_available() else "CPU" 
+            logger.info(f"LLaVA-Next analizador listo en {device}")
             
         except Exception as e:
-            logger.error(f"Error cargando el analizador de nutrición: {e}")
+            logger.error(f"Error cargando LLaVA-Next: {e}")
             try:
-                analyzer = AutoModelForCausalLM.from_pretrained(
-                    "vikhyatk/moondream2",
-                    revision="2025-06-21",
-                    trust_remote_code=True,
-                    torch_dtype=torch.float32,
+                logger.info("Intentando cargar modelo LLaVA básico como fallback...")
+                model_name = "llava-hf/llava-1.5-7b-hf"
+                
+                processor = LlavaProcessor.from_pretrained(model_name, use_fast=True)
+                analyzer = LlavaForConditionalGeneration.from_pretrained(
+                    model_name,
+                    dtype=torch.float32,
+                    device_map="cpu",
                 )
-                analyzer = analyzer.to('cpu')
-                logger.info("Modelo cargado exitosamente en CPU como fallback")
+                
+                logger.info("Modelo LLaVA básico cargado exitosamente como fallback")
                 
             except Exception as e2:
                 logger.error(f"Error en fallback: {e2}")
                 analyzer = None
-    return analyzer
+                processor = None
+                
+    return analyzer, processor
 
 def get_redis_client():
     global redis_client
@@ -166,16 +202,16 @@ def callback(ch, method, properties, body):
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
             return
         
-        if analyzer is None:
-            analyzer = setup_analyzer()
-            if analyzer is None:
-                logger.error("No se pudo cargar el analizador")
+        if analyzer is None or processor is None:
+            analyzer, processor = setup_analyzer()
+            if analyzer is None or processor is None:
+                logger.error("No se pudo cargar el analizador LLaVA-Next")
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
                 return
         
         try:
             logger.info(f"Comenzando análisis nutricional para: {filename}")
-            nutrition_result = query_nutrition_analyzer(image, analyzer)
+            nutrition_result = query_nutrition_analyzer(image, analyzer, processor)
             logger.info(f"Análisis completado para tarea: {task_id}")
             result = {
                 'task_id': task_id,
@@ -273,69 +309,131 @@ def extract_food_type(text: str) -> str:
         logger.debug(f"Error extrayendo tipo de comida: {e}")
         return "Alimento no identificado"
 
-def query_nutrition_analyzer(image: Image.Image, analyzer):
+def query_nutrition_analyzer(image: Image.Image, analyzer, processor):
     try:
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
         model_device = next(analyzer.parameters()).device
         device_name = "GPU" if model_device.type == 'cuda' else "CPU"
-        logger.info(f"Iniciando análisis en {device_name} (device: {model_device})")
+        logger.info(f"Iniciando análisis LLaVA-Next en {device_name} (device: {model_device})")
         
-        question = "¿Qué comida ves en esta imagen? Describe los alimentos y estima las calorías, proteínas, carbohidratos y grasas."
+        # Prompt optimizado para LLaVA-Next y análisis nutricional
+        conversation = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": """Analiza esta imagen de comida de manera detallada y precisa. 
+                    
+                    Identifica todos los alimentos visibles y calcula los valores nutricionales aproximados para la porción total mostrada en la imagen.
+                    
+                    Proporciona tu respuesta en este formato exacto:
+                    Comida: [descripción específica de lo que ves]
+                    Calorías: [número] kcal
+                    Proteínas: [número] g
+                    Carbohidratos: [número] g
+                    Grasas: [número] g
+                    Fibra: [número] g
+                    Confianza: [porcentaje]%
+                    
+                    Sé específico sobre qué alimentos ves y proporciona estimaciones nutricionales realistas basadas en las porciones visibles."""},
+                    {"type": "image"}
+                ]
+            }
+        ]
+        
+        # Preparar inputs usando el processor de LLaVA-Next  
+        prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
+        
+        logger.info(f"Imagen para análisis - Tamaño: {image.size}, Modo: {image.mode}")
+        logger.info("Procesando imagen con LLaVA-Next...")
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        logger.info(f"Imagen para análisis - Tamaño: {image.size}, Modo: {image.mode}")
-        
         try:
+            # Procesar inputs
+            inputs = processor(prompt, image, return_tensors="pt").to(model_device)
+            
             with torch.no_grad():
-                logger.info(f"Realizando consulta con modelo en: {next(analyzer.parameters()).device}")
+                logger.info(f"Generando respuesta con LLaVA-Next en: {model_device}")
                 
-                if model_device.type == 'cuda':
-                    with torch.cuda.device(model_device):
-                        raw_result = analyzer.query(image, question=question)
+                # Generar respuesta
+                output = analyzer.generate(
+                    **inputs,
+                    max_new_tokens=512,
+                    do_sample=True,
+                    temperature=0.2,
+                    pad_token_id=processor.tokenizer.eos_token_id
+                )
+                
+                # Decodificar respuesta
+                generated_text = processor.decode(output[0], skip_special_tokens=True)
+                
+                # Extraer solo la respuesta generada (sin el prompt)
+                if "assistant\n\n" in generated_text:
+                    raw_result = generated_text.split("assistant\n\n")[-1].strip()
                 else:
-                    raw_result = analyzer.query(image, question=question)
+                    raw_result = generated_text.split(prompt)[-1].strip()
                     
         except RuntimeError as e:
-            if "Expected all tensors to be on the same device" in str(e):
-                logger.warning(f"Error de dispositivo detectado: {e}")
-                logger.info("Intentando mover el modelo completamente a CPU como fallback...")
+            if "Expected all tensors to be on the same device" in str(e) or "CUDA out of memory" in str(e):
+                logger.warning(f"Error GPU detectado: {e}")
+                logger.info("Intentando procesar en CPU como fallback...")
                 
+                # Fallback a CPU
                 analyzer_cpu = analyzer.cpu()
-                torch.cuda.empty_cache() if torch.cuda.is_available() else None
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                
+                inputs_cpu = processor(prompt, image, return_tensors="pt").to('cpu')
                 
                 with torch.no_grad():
-                    raw_result = analyzer_cpu.query(image, question=question)
+                    output = analyzer_cpu.generate(
+                        **inputs_cpu,
+                        max_new_tokens=512,
+                        do_sample=True,
+                        temperature=0.2,
+                        pad_token_id=processor.tokenizer.eos_token_id
+                    )
+                    
+                    generated_text = processor.decode(output[0], skip_special_tokens=True)
+                    
+                    if "assistant\n\n" in generated_text:
+                        raw_result = generated_text.split("assistant\n\n")[-1].strip()
+                    else:
+                        raw_result = generated_text.split(prompt)[-1].strip()
                 
+                # Intentar mover de vuelta a GPU
                 if torch.cuda.is_available():
                     try:
                         analyzer = analyzer_cpu.cuda()
-                        logger.info("Modelo movido de vuelta a GPU")
+                        logger.info("Modelo LLaVA-Next movido de vuelta a GPU")
                     except:
-                        logger.warning("No se pudo mover el modelo de vuelta a GPU")
+                        logger.warning("No se pudo mover LLaVA-Next de vuelta a GPU")
             else:
                 raise e
             
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        logger.info(f"Análisis completado")
-        logger.info(f"Resultado bruto del modelo: {raw_result}")
+        logger.info(f"Análisis LLaVA-Next completado")
+        logger.info(f"Respuesta completa del modelo: {raw_result}")
         
-        if isinstance(raw_result, dict) and 'answer' in raw_result:
-            analysis_text = raw_result['answer']
-            logger.info(f"Texto extraído para análisis: {analysis_text}")
-        else:
-            analysis_text = str(raw_result)
+        # LLaVA-Next devuelve texto directo, no diccionario
+        analysis_text = str(raw_result).strip()
+        logger.info(f"Texto para parsing nutricional: {analysis_text}")
         
+        # Extraer valores nutricionales con patrones mejorados
         calories = extract_nutrition_value(analysis_text, 'calor')
         proteins = extract_nutrition_value(analysis_text, 'prote') 
         carbohydrates = extract_nutrition_value(analysis_text, 'carboh')
         fats = extract_nutrition_value(analysis_text, 'gras')
+        fiber = extract_nutrition_value(analysis_text, 'fibra')
         food_type = extract_food_type(analysis_text)
+        
+        # Extraer nivel de confianza si está disponible
+        confidence = extract_nutrition_value(analysis_text, 'confianza')
         
         structured_result = {
             'raw_analysis': raw_result,
@@ -343,10 +441,13 @@ def query_nutrition_analyzer(image: Image.Image, analyzer):
             'proteins': proteins, 
             'carbohydrates': carbohydrates,
             'fats': fats,
-            'food_type': food_type
+            'fiber': fiber,
+            'food_type': food_type,
+            'confidence': confidence,
+            'model': 'LLaVA-Next'
         }
         
-        logger.info(f"Análisis estructurado - Comida: {food_type}, Calorías: {calories}, Proteínas: {proteins}g, Carbohidratos: {carbohydrates}g, Grasas: {fats}g")
+        logger.info(f"Análisis LLaVA estructurado - Comida: {food_type}, Calorías: {calories}, Proteínas: {proteins}g, Carbohidratos: {carbohydrates}g, Grasas: {fats}g, Confianza: {confidence}%")
         
         return structured_result
         
@@ -386,9 +487,12 @@ def start_consuming():
                 auto_ack=False
             )
         
-        setup_analyzer()
+        analyzer, processor = setup_analyzer()
+        if analyzer is None or processor is None:
+            logger.error("No se pudo inicializar LLaVA-Next")
+            return
             
-        logger.info("Worker iniciado. Esperando mensajes...")
+        logger.info("Worker LLaVA-Next iniciado. Esperando mensajes...")
         channel.start_consuming()
             
     except KeyboardInterrupt:
