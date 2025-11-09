@@ -79,31 +79,51 @@ services:
     networks:
       - project_network
 
-  worker:
-    build: ./worker
-    container_name: model_IA_worker
-    restart: always
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    env_file:
-      - .env
-    environment:
-      - RABBITMQ_HOST=rabbitmq
-      - REDIS_HOST=redis
-      - NVIDIA_VISIBLE_DEVICES=all
-      - CUDA_VISIBLE_DEVICES=0
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    networks:
-      - project_network
+  # worker:
+  #   build: ./worker
+  #   container_name: model_IA_worker
+  #   restart: always
+  #   depends_on:
+  #     rabbitmq:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - RABBITMQ_HOST=rabbitmq
+  #     - REDIS_HOST=redis
+  #     - NVIDIA_VISIBLE_DEVICES=all
+  #     - CUDA_VISIBLE_DEVICES=0
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   networks:
+  #     - project_network
+
+  worker-gpt4:
+      build:
+        context: ./worker
+        dockerfile: Dockerfile.gpt4
+      container_name: gpt4_vision_worker
+      restart: always
+      depends_on:
+        rabbitmq:
+          condition: service_healthy
+        redis:
+          condition: service_healthy
+      env_file:
+        - .env
+      environment:
+        - RABBITMQ_HOST=rabbitmq
+        - REDIS_HOST=redis
+        - OPENAI_API_KEY=${OPENAI_API_KEY}
+      networks:
+        - project_network
 
   frontend:
     build: ./frontend
