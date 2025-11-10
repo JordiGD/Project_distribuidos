@@ -10,12 +10,13 @@ const api = axios.create({
   },
 });
 
-export const analyzeImage = async (imageFile) => {
+export const analyzeImage = async (imageFile, priority = false) => {
   try {
     const formData = new FormData();
     formData.append('image', imageFile);
 
     const response = await api.post('/api/analyze-food', formData, {
+      params: { priority },
       headers: {
         'Content-Type': 'multipart/form-data',
       },

@@ -122,6 +122,8 @@ services:
         - RABBITMQ_HOST=rabbitmq
         - REDIS_HOST=redis
         - OPENAI_API_KEY=${OPENAI_API_KEY}
+        - RABBITMQ_QUEUE=food_analysis_queue
+        - RABBITMQ_PRIORITY_QUEUE=food_analysis_priority_queue
       networks:
         - project_network
 

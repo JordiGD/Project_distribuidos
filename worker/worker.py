@@ -25,7 +25,8 @@ redis_client = None
 rabbitmq_host = os.getenv('RABBITMQ_HOST', 'rabbitmq')
 rabbitmq_user = os.getenv('RABBITMQ_USER', 'admin')
 rabbitmq_pass = os.getenv('RABBITMQ_PASS', 'password')
-queue_name = 'food_analysis_queue'
+queue_name = os.getenv('RABBITMQ_QUEUE', 'food_analysis_queue')
+priority_queue_name = os.getenv('RABBITMQ_PRIORITY_QUEUE', 'food_analysis_priority_queue')
 
 def get_rabbitmq_connection():
     import time
@@ -493,22 +494,31 @@ def start_consuming():
         
         connection = get_rabbitmq_connection()
         channel = connection.channel()
-            
+        
         channel.queue_declare(queue=queue_name, durable=True)
+        channel.queue_declare(queue=priority_queue_name, durable=True)
         channel.basic_qos(prefetch_count=1)
-            
+        
         channel.basic_consume(
-                queue=queue_name,
-                on_message_callback=callback,
-                auto_ack=False
-            )
+            queue=priority_queue_name,
+            on_message_callback=callback,
+            auto_ack=False
+        )
+        channel.basic_consume(
+            queue=queue_name,
+            on_message_callback=callback,
+            auto_ack=False
+        )
         
         analyzer, processor = setup_analyzer()
         if analyzer is None or processor is None:
             logger.error("No se pudo inicializar LLaVA-Next")
             return
-            
-        logger.info("Worker LLaVA-Next iniciado. Esperando mensajes...")
+        
+        logger.info(f"Worker LLaVA-Next iniciado")
+        logger.info(f"  - Consumiendo de cola prioritaria: {priority_queue_name}")
+        logger.info(f"  - Consumiendo de cola normal: {queue_name}")
+        logger.info("Esperando mensajes...")
         channel.start_consuming()
             
     except KeyboardInterrupt:

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import IndexView from './components/IndexView';
+import ImageUploader from './components/ImageUploader';
 import ResultView from './components/ResultView';
 import { analyzeImage, getResults } from './services/api';
 
@@ -10,7 +10,7 @@ function App() {
   const [uploadedImage, setUploadedImage] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleImageUpload = async (imageFile) => {
+  const handleImageUpload = async (imageFile, priority = false) => {
     try {
       setIsLoading(true);
       
@@ -19,8 +19,10 @@ function App() {
       setUploadedImage(imageUrl);
       
       // Enviar imagen para análisis
-      const response = await analyzeImage(imageFile);
+      const response = await analyzeImage(imageFile, priority);
       setTaskId(response.task_id);
+      
+      console.log(`Análisis ${priority ? 'prioritario' : 'normal'} iniciado - Cola: ${response.queue}`);
       
       // Cambiar a vista de resultado
       setCurrentView('result');
@@ -80,7 +82,7 @@ function App() {
   return (
     <>
       {currentView === 'index' && (
-        <IndexView onImageUpload={handleImageUpload} />
+        <ImageUploader onImageUpload={handleImageUpload} />
       )}
       
       {currentView === 'result' && (

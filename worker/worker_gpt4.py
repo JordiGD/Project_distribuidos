@@ -53,7 +53,8 @@ redis_client = None
 rabbitmq_host = os.getenv('RABBITMQ_HOST', 'rabbitmq')
 rabbitmq_user = os.getenv('RABBITMQ_USER', 'admin')
 rabbitmq_pass = os.getenv('RABBITMQ_PASS', 'password')
-queue_name = 'food_analysis_queue'
+queue_name = os.getenv('RABBITMQ_QUEUE', 'food_analysis_queue')
+priority_queue_name = os.getenv('RABBITMQ_PRIORITY_QUEUE', 'food_analysis_priority_queue')
 
 def get_rabbitmq_connection():
     import time
@@ -285,25 +286,32 @@ def parse_nutrition_with_langchain(raw_text: str) -> NutritionInfo:
 def query_gpt4_vision(image_base64: str, client: OpenAI):
     try:
         logger.info("Iniciando análisis con GPT-4 Vision (gpt-4o)")
-        system_prompt = """Eres un experto nutricionista y analista de alimentos. 
-Tu tarea es analizar imágenes de comida y proporcionar información nutricional precisa y detallada.
-Siempre responde en español y usa el formato especificado."""
+        system_prompt = """Eres un experto nutricionista especializado en análisis de alimentos mediante imágenes. 
+Tu trabajo es identificar alimentos en fotografías y estimar su información nutricional.
+IMPORTANTE: Solo analiza imágenes de comida. Si ves comida, SIEMPRE proporciona un análisis nutricional.
+Responde SIEMPRE en español y usa EXACTAMENTE el formato especificado."""
 
-        user_prompt = """Analiza esta imagen de comida de manera detallada y precisa.
+        user_prompt = """Por favor, analiza esta imagen de comida.
 
-Identifica todos los alimentos visibles y calcula los valores nutricionales aproximados para la porción total mostrada en la imagen.
+INSTRUCCIONES:
+1. Identifica qué alimentos ves en la imagen
+2. Estima la porción/cantidad visible
+3. Calcula los valores nutricionales aproximados TOTALES
 
-Proporciona tu respuesta EXACTAMENTE en este formato:
-Comida: [descripción específica de lo que ves]
+FORMATO REQUERIDO (copia esto y completa con números):
+Comida: [descripción detallada del plato]
 Calorías: [número] kcal
 Proteínas: [número] g
 Carbohidratos: [número] g
 Grasas: [número] g
 Fibra: [número] g
-Confianza: [porcentaje]%
+Confianza: [número entre 60-95]%
 
-Sé específico sobre qué alimentos ves y proporciona estimaciones nutricionales realistas basadas en las porciones visibles.
-No agregues explicaciones adicionales, solo la información en el formato solicitado."""
+REGLAS:
+- Siempre proporciona números (nunca dejes valores vacíos)
+- Si no estás seguro, haz tu mejor estimación
+- La confianza debe reflejar qué tan seguro estás
+- NO agregues explicaciones extra, SOLO el formato especificado"""
         
         if not image_base64.startswith('data:'):
             image_url = f"data:image/jpeg;base64,{image_base64}"
@@ -334,15 +342,78 @@ No agregues explicaciones adicionales, solo la información en el formato solici
                     ]
                 }
             ],
-            max_tokens=1000,
-            temperature=0.2
+            max_tokens=500,
+            temperature=0.3
         )
         raw_result = response.choices[0].message.content.strip()
         
         logger.info(f"Respuesta de GPT-4 Vision recibida")
         logger.info(f"Respuesta completa: {raw_result}")
         
+        rejection_phrases = [
+            "lo siento",
+            "no puedo",
+            "cannot",
+            "sorry",
+            "unable to",
+            "not able",
+            "can't help",
+            "no es posible"
+        ]
+        
+        if any(phrase in raw_result.lower() for phrase in rejection_phrases):
+            logger.warning(f"GPT-4 rechazó analizar la imagen: {raw_result}")
+            logger.info("Reintentando con prompt simplificado...")
+            
+            simple_prompt = """Esta es una imagen de comida. Por favor analízala y dame:
+            
+Comida: [nombre del plato]
+Calorías: [número] kcal
+Proteínas: [número] g
+Carbohidratos: [número] g
+Grasas: [número] g
+Fibra: [número] g
+Confianza: 75%
+
+Proporciona valores estimados basados en lo que ves."""
+            
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": simple_prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": image_url,
+                                    "detail": "high"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=500,
+                temperature=0.3
+            )
+            raw_result = response.choices[0].message.content.strip()
+            logger.info(f"Segunda respuesta: {raw_result}")
+        
         nutrition_info = parse_nutrition_with_langchain(raw_result)
+        
+        if nutrition_info.calorias == 0 and nutrition_info.proteinas == 0 and nutrition_info.carbohidratos == 0:
+            logger.warning("No se pudieron extraer valores nutricionales válidos")
+            nutrition_info.comida = "Alimento detectado (análisis incompleto)"
+            nutrition_info.calorias = 100
+            nutrition_info.proteinas = 5
+            nutrition_info.carbohidratos = 15
+            nutrition_info.grasas = 3
+            nutrition_info.fibra = 1
+            nutrition_info.confianza = 30
         
         structured_result = {
             'nombre': nutrition_info.comida,
@@ -423,17 +494,26 @@ def start_consuming():
         
         connection = get_rabbitmq_connection()
         channel = connection.channel()
-            
+        
         channel.queue_declare(queue=queue_name, durable=True)
+        channel.queue_declare(queue=priority_queue_name, durable=True)
         channel.basic_qos(prefetch_count=1)
-            
+        
         channel.basic_consume(
-                queue=queue_name,
-                on_message_callback=callback,
-                auto_ack=False
-            )
-            
-        logger.info("Worker GPT-4 iniciado. Esperando mensajes...")
+            queue=priority_queue_name,
+            on_message_callback=callback,
+            auto_ack=False
+        )
+        channel.basic_consume(
+            queue=queue_name,
+            on_message_callback=callback,
+            auto_ack=False
+        )
+        
+        logger.info(f"Worker GPT-4 Vision iniciado")
+        logger.info(f"  - Consumiendo de cola prioritaria: {priority_queue_name}")
+        logger.info(f"  - Consumiendo de cola normal: {queue_name}")
+        logger.info("Esperando mensajes...")
         channel.start_consuming()
             
     except KeyboardInterrupt:
