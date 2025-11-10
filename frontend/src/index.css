@@ -931,3 +931,32 @@ html.dark .feature h3 {
 html.dark .feature p {
   color: var(--gray-400);
 }
+/* ======================================== ANIMACIÓN DE PUNTITOS PARA CARGA ======================================== */
+
+@keyframes dotAnimation {
+  0% { content: '.'; }
+  33% { content: '..'; }
+  66% { content: '...'; }
+  100% { content: '.'; }
+}
+
+@keyframes dotPulse {
+  0%, 20% { opacity: 0; }
+  50% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.loading-dots::after {
+  content: '...';
+  display: inline-block;
+  animation: dotAnimation 1.5s infinite;
+}
+
+.dot-1, .dot-2, .dot-3 {
+  animation: dotPulse 1.4s infinite;
+}
+
+.dot-1 { animation-delay: 0s; }
+.dot-2 { animation-delay: 0.2s; }
+.dot-3 { animation-delay: 0.4s; }
+
