@@ -716,6 +716,9 @@ html.dark .priority-text {
 
 /* Estilos para ImageUploader component */
 .upload-area {
+  display: flex;
+  justify-content: center;
+  align-items: center;
   border: 2px dashed var(--gray-300);
   border-radius: 0.75rem;
   padding: 3rem 2rem;
