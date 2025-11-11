@@ -399,6 +399,29 @@ html.dark .food-description p {
   color: var(--gray-300);
 }
 
+.food-description-badge {
+  margin-top: 1rem;
+  padding: 1rem;
+  background-color: rgba(206, 80, 97, 0.1);
+  border-radius: 0.5rem;
+  border-left: 3px solid var(--primary);
+}
+
+html.dark .food-description-badge {
+  background-color: rgba(182, 39, 63, 0.2);
+}
+.food-description-badge p {
+  color: red;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+html.dark .food-description-badge p {
+  color: rgb(255, 124, 124);
+}
+
 .section-divider {
   border-top: 1px solid #d1e6d9;
   margin-left: 1rem;
@@ -411,6 +434,15 @@ html.dark .section-divider {
 
 .nutrition-title {
   color: var(--text-dark);
+  font-size: 1.375rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.015em;
+  padding: 1.25rem 1rem 0.75rem 1rem;
+}
+
+.no-nutrition-data{
+  color: var(--gray-600);
   font-size: 1.375rem;
   font-weight: 700;
   line-height: 1.2;

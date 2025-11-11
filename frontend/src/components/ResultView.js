@@ -91,9 +91,15 @@ const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
                       <p className="calories-label">Calorías</p>
                     </div>
                     {!isLoading && foodDescription && (
-                      <div className="food-description">
-                        <p>{foodDescription}</p>
-                      </div>
+                      (nutritionData.proteins !== '0 g' && nutritionData.carbs !== '0 g' && nutritionData.fats !== '0 g' && nutritionData.fiber !== '0 g') ? (
+                        <div className="food-description">
+                          <p>{foodDescription}</p>
+                        </div>
+                      ) : (
+                        <div className="food-description-badge">
+                          <p>{foodDescription}</p>
+                        </div>
+                      )
                     )}
                   </div>
                 </div>
@@ -102,8 +108,13 @@ const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
                 <div className="section-divider"></div>
 
                 {/* Resumen nutricional */}
+                {!isLoading && (nutritionData.proteins === '0 g' && nutritionData.carbs === '0 g' && nutritionData.fats === '0 g' && nutritionData.fiber === '0 g') ? (
+                  <p className="no-nutrition-data">No se encontraron datos nutricionales adicionales.</p>
+                ) : (
                 <h2 className="nutrition-title">Resumen Nutricional</h2>
+                )}
                 <div className="nutrition-grid">
+                  {!isLoading && nutritionData.proteins && nutritionData.proteins !== '0 g' && (
                   <div className="nutrition-card">
                     <span className="material-symbols-outlined nutrition-icon">fitness_center</span>
                     <div>
@@ -111,7 +122,9 @@ const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
                       <p className="nutrition-value">{isLoading ? <LoadingDots /> : nutritionData.proteins}</p>
                     </div>
                   </div>
+                  )}
 
+                  {!isLoading && nutritionData.carbs && nutritionData.carbs !== '0 g' && (
                   <div className="nutrition-card">
                     <span className="material-symbols-outlined nutrition-icon">bakery_dining</span>
                     <div>
@@ -119,7 +132,9 @@ const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
                       <p className="nutrition-value">{isLoading ? <LoadingDots /> : nutritionData.carbs}</p>
                     </div>
                   </div>
+                  )}
 
+                  {!isLoading && nutritionData.fats && nutritionData.fats !== '0 g' && (
                   <div className="nutrition-card">
                     <span className="material-symbols-outlined nutrition-icon">oil_barrel</span>
                     <div>
@@ -127,6 +142,7 @@ const ResultView = ({ results, imageUrl, isLoading, onNewAnalysis }) => {
                       <p className="nutrition-value">{isLoading ? <LoadingDots /> : nutritionData.fats}</p>
                     </div>
                   </div>
+                  )}
 
                   {!isLoading && nutritionData.fiber && nutritionData.fiber !== '0 g' && (
                     <div className="nutrition-card">

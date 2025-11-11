@@ -407,12 +407,12 @@ Proporciona valores estimados basados en lo que ves."""
         
         if nutrition_info.calorias == 0 and nutrition_info.proteinas == 0 and nutrition_info.carbohidratos == 0:
             logger.warning("No se pudieron extraer valores nutricionales válidos")
-            nutrition_info.comida = "Alimento detectado (análisis incompleto)"
-            nutrition_info.calorias = 100
-            nutrition_info.proteinas = 5
-            nutrition_info.carbohidratos = 15
-            nutrition_info.grasas = 3
-            nutrition_info.fibra = 1
+            nutrition_info.comida = "Alimento no detectado"
+            nutrition_info.calorias = 0
+            nutrition_info.proteinas = 0
+            nutrition_info.carbohidratos = 0
+            nutrition_info.grasas = 0
+            nutrition_info.fibra = 0
             nutrition_info.confianza = 30
         
         structured_result = {
